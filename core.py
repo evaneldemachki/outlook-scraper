@@ -68,14 +68,14 @@ class Session:
         # load table index
         with open("index.json", "r") as f:
             table_index = json.load(f)
-        with open(self.master, "w") as f:
+        with open(self.master, "w", encoding="utf-8") as f:
             writer = csv.writer(f, lineterminator='\n')
             data = []
             for table_name in table_index:
                 query = "SELECT * FROM '{0}'".format(table_index[table_name])
                 self.c.execute(query)
                 for crow in self.c.fetchall():
-                    row = [table_name] + [str(x) for x in list(crow)][:-1]
+                    row = [table_name] + [str(x) for x in list(crow)]
                     data.append(row)
             i = 0
             for row in data:
