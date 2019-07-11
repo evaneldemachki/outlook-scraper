@@ -160,6 +160,15 @@ class Session:
         query = "SELECT sent_at FROM '{0}'".format(table_id)
         self.c.execute(query)
         ts_list = [str(x[0]) for x in self.c.fetchall()]
+        x, y = 0, len(ts_list)
+        while x < y:
+            if ts_list[x] == "ERROR":
+                ts_list.pop(x)
+                y -= 1
+                continue
+            
+            x += 1 
+                
         ts_list = [datetime.datetime.strptime(ts.split("+")[0], "%Y-%m-%d %H:%M:%S") for ts in ts_list]
         return max(ts_list)
         
