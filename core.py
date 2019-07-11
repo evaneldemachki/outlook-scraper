@@ -85,7 +85,7 @@ class Session:
                 except:
                     continue
                     
-                ts = datetime.datetime.strptime(str(obj.SentOn).split("+")[0], "%Y-%m-%d %H:%M:%S")
+                ts = datetime.datetime.strptime(sent_on.split("+")[0], "%Y-%m-%d %H:%M:%S")
                 if last_ts is None:
                     data[table_id].append(buildrow(obj))
                     i += 1
