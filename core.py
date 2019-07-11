@@ -23,17 +23,46 @@ class Session:
         self.c = self.conn.cursor()
         
         self._updatedb()
+    
+    def __repr__(self):
+        msg = "outlook-scraper session:\n"
+        msg += "-accounts:\n"
+        
+        with open("index.json", "r") as f:
+            table_index = json.load(f)
+        for account in table_index:
+            query = "SELECT count(*) FROM '{0}'".format(table_index[account])
+            self.c.execute(query)
+            table_count = self.c.fetchone()[0]
+            msg += "\t{0}: {1} email(s) stored\n".format(account, table_count)
+        
+        return msg[:-1]
+        
+        
             
     def update(self):
     
         def buildrow(obj):
             row = []
-            row.append(str(obj.EntryID))
-            row.append(str(obj.SentOn))
-            row.append(str(obj.SenderEmailAddress))
-            row.append(str(obj.SenderName))
-            row.append(str(obj.Subject))
-            row.append(str(obj.Body))
+            
+            attr_list = (
+                "EntryID",
+                "SentOn",
+                "SenderEmailAddress",
+                "SenderName",
+                "Subject",
+                "Body"
+            )
+            for attr in attr_list:
+                try:
+                    entry = str(getattr(obj, attr))
+                    if attr == "SentOn":
+                        entry = entry.split("+")[0]
+                except:
+                    entry = "ERROR"
+                    
+                row.append(entry)
+           
             return tuple(row)
             
         # load table index
@@ -51,6 +80,11 @@ class Session:
             last_ts = self._lastts(table_id)
             i = 0
             for obj in reversed(list(inbox.Items)):
+                try:
+                    sent_on = str(obj.SentOn)
+                except:
+                    continue
+                    
                 ts = datetime.datetime.strptime(str(obj.SentOn).split("+")[0], "%Y-%m-%d %H:%M:%S")
                 if last_ts is None:
                     data[table_id].append(buildrow(obj))
@@ -82,7 +116,7 @@ class Session:
                 writer.writerow(row)
                 i += 1
         
-        print("Update successful: parsed ({0}) new email(s)".format(i))
+        print("Successfully created master file: parsed ({0}) new email(s)".format(i))
         
     def _updatedb(self):
         # load table index
@@ -111,7 +145,10 @@ class Session:
                     
         
         self.conn.commit()
-        print("Added ({0}) new table(s)".format(i))
+        if i == 0:
+            print("Table structure up to date")
+        else:
+            print("Added ({0}) new table(s)".format(i))
     
     def _lastts(self, table_id):
         # check if table is empty
@@ -127,7 +164,6 @@ class Session:
         return max(ts_list)
         
             
-    
     def _write(self, data):
         # for each email account inbox:
         row_counts = []
@@ -141,7 +177,11 @@ class Session:
         total = 0
         for c in row_counts:
             total += c
-        print("Successfully wrote ({0}) row(s) to database".format(total))
+            
+        if c == 0:
+            print("All data is up to date")
+        else:
+            print("Successfully wrote ({0}) row(s) to database".format(total))
         
     
     
