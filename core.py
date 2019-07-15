@@ -97,7 +97,30 @@ class Session:
         
         self._write(data)
                 
-        
+    def debug(self):
+        for account in self.accounts:
+            acc_name = str(account)
+            inbox = outlook.Folders(account.DeliveryStore.DisplayName)
+            inbox = inbox.Folders("Inbox")
+            attr_list = (
+                "EntryID",
+                "SentOn",
+                "SenderEmailAddress",
+                "SenderName",
+                "Subject",
+                "Body"
+            )
+            for item in inbox.Items:
+                for attr in attr_list:
+                    try:
+                        getattr(item, attr)
+                    except:
+                        print("Failed on object {0}".format(str(item)))
+                        print("account: {0}\n".format(acc_name))
+                        print("...attribute: {0}\n".format(attr))
+                        return item
+                        
+                        
     def makemaster(self):
         # load table index
         with open("index.json", "r") as f:
@@ -191,6 +214,8 @@ class Session:
             print("All data is up to date")
         else:
             print("Successfully wrote ({0}) row(s) to database".format(total))
+        
+    
         
     
     
