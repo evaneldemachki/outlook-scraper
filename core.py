@@ -40,7 +40,7 @@ class Session:
         
         
             
-    def update(self):
+    def update(self, mode=None):
     
         def buildrow(obj):
             row = []
@@ -54,12 +54,18 @@ class Session:
                 "Body"
             )
             for attr in attr_list:
+                if mode == "debug":
+                    with open("debug.txt", "a", encoding="utf-8") as f:
+                        f.write("..." + attr + ":\n")    
                 try:
                     entry = str(getattr(obj, attr))
                     if attr == "SentOn":
                         entry = entry.split("+")[0]
                 except:
                     entry = "ERROR"
+                
+                with open("debug.txt", "a", encoding="utf-8") as f:
+                    f.write("......" + entry + ":\n")
                     
                 row.append(entry)
            
@@ -71,6 +77,8 @@ class Session:
         data = {}
         # for each account:
         for account in self.accounts:
+            with open("debug.txt", "a", encoding="utf-8") as f:
+                f.write("account: " + str(account) + ":\n")
             table_id = table_index[str(account)]
             data[table_id] = []
             # locate inbox folder
