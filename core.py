@@ -5,42 +5,89 @@ import uuid
 import os
 import json
 import datetime
-
-if "index.json" not in os.listdir():
-    with open("index.json", "w") as f:
-        json.dump({}, f)
+import exceptions
 
 outlook = client.Dispatch("Outlook.Application").GetNamespace("MAPI")
 
+# generate config file
+def generate():
+    if "config.json" in os.listdir():
+        raise exceptions.ExistingConfig
+
+    config = {
+        "index": {},
+        "settings": {
+            "limit": "10d"
+        }
+    }
+    for account in client.Dispatch("Outlook.Application").Session.Accounts:
+        config["index"][str(account)] = str(uuid.uuid4()).replace("-", "_")
+
+    with open("config.json", "w") as f:
+        json.dump(config, f)
+
+    print("Successfully generated configuration file")
+
+def strpdelta(ds):
+    mag = int(ds[:-1])
+    unit = ds[-1]
+    if unit == "d":
+        delta = datetime.timedelta(days=mag)
+        return delta
+    elif unit == "h":
+        delta = datetime.timedelta(hours=mag)
+        return delta
+    else:
+        raise exceptions.InvalidLimit(str(ds))
+
 class Session:
     def __init__(self):
+        # verify config file exists
+        if "config.json" not in os.listdir():
+            raise exceptions.NoConfigFile
+        # verify limit is valid
+        with open("config.json", "r") as f:
+            config = json.load(f)
+        strpdelta(config["settings"]["limit"])
+        # load outlook accounts
         self.accounts = []
         for account in client.Dispatch("Outlook.Application").Session.Accounts:
             self.accounts.append(account)
-
+        # establish sqlite3 connection
         self.conn = sqlite3.connect("core.db")
         self.c = self.conn.cursor()
-
+        # update table structure
         self._updatedb()
 
     def __repr__(self):
         msg = "outlook-scraper session:\n"
         msg += "-accounts:\n"
 
-        with open("index.json", "r") as f:
-            table_index = json.load(f)
-        for account in table_index:
-            query = "SELECT count(*) FROM '{0}'".format(table_index[account])
+        with open("config.json", "r") as f:
+            config = json.load(f)
+        for account in config:
+            query = "SELECT count(*) FROM '{0}'".format(config["index"][account])
             self.c.execute(query)
             table_count = self.c.fetchone()[0]
             msg += "\t{0}: {1} email(s) stored\n".format(account, table_count)
 
         return msg[:-1]
 
-    def _inboxlist(self, inbox):
-        for i in range(inbox.Count - 1, -1, -1):
+    def _inboxlist(self, inbox, floor):
+        # restrict inbox items to floor timestamp
+        dtf = "%Y-%m-%d %I:%M %p"
+        floor_str = datetime.datetime.strftime(floor, dtf)
+        filter = "[SentOn] > '{0}'".format(floor_str)
+        inbox = inbox.Restrict(filter)
+        # generate inbox items in reverse
+        for i in range(0, inbox.Count):
             try:
-                yield inbox[i]
+                sent_on = str(inbox[i].SentOn).split("+")[0]
+                ts = datetime.datetime.strptime(sent_on, "%Y-%m-%d %H:%M:%S")
+                if ts > floor:
+                    yield inbox[i]
+                else:
+                    continue
             except:
                 continue
 
@@ -78,9 +125,9 @@ class Session:
 
             return tuple(row)
 
-        # load table index
-        with open("index.json", "r") as f:
-            table_index = json.load(f)
+        # load config file
+        with open("config.json", "r") as f:
+            config = json.load(f)
         # initialize update queue
         queue = {}
         # for each account:
@@ -93,35 +140,25 @@ class Session:
                 with open("debug.txt", "a", encoding="utf-8") as f:
                     f.write("account: " + acc_name + ":\n")
             # load table id from table index
-            table_id = table_index[acc_name]
+            table_id = config["index"][acc_name]
             queue[table_id] = []
             # locate inbox folder
             inbox = outlook.Folders(account.DeliveryStore.DisplayName)
             inbox = inbox.Folders("Inbox").Items
             # find last saved timestamp from database
             last_ts = self._lastts(table_id)
+            limit = strpdelta(config["settings"]["limit"])
+            curr_time = datetime.datetime.now()
+            limit = curr_time - limit
+            if last_ts is None:
+                floor = limit
+            else:
+                floor = max(last_ts, limit)
             # parse each email in inbox, add to list
             i = 0
-            for obj in self._inboxlist(inbox):
-                try: # assure timestamp attribute exists
-                    sent_on = str(obj.SentOn)
-                except: # otherwise, skip email
-                    continue
-                # convert timestamp attr to datetime
-                ts = datetime.datetime.strptime(
-                    sent_on.split("+")[0],
-                    "%Y-%m-%d %H:%M:%S"
-                )
-                if last_ts is None: # if no prev. timestamp exists
-                    # add data to queue
-                    queue[table_id].append(buildrow(obj))
-                    i += 1
-                    continue
-                elif ts > last_ts: # if timestamp > prev. timestamp
-                    # add data to queue
-                    queue[table_id].append(buildrow(obj))
-                    i += 1
-                    continue
+            for obj in self._inboxlist(inbox, floor):
+                queue[table_id].append(buildrow(obj))
+                i += 1
 
             if i == 0:
                 print("...account is up to date")
@@ -154,13 +191,13 @@ class Session:
 
     def makemaster(self, path="master.csv"):
         # load table index
-        with open("index.json", "r") as f:
-            table_index = json.load(f)
+        with open("config.json", "r") as f:
+            config = json.load(f)
         with open(path, "w", encoding="utf-8") as f:
             writer = csv.writer(f, lineterminator='\n')
             i = 0
-            for table_name in table_index:
-                query = "SELECT * FROM '{0}'".format(table_index[table_name])
+            for table_name in config["index"]:
+                query = "SELECT * FROM '{0}'".format(config["index"][table_name])
                 self.c.execute(query)
                 for crow in self.c.fetchall():
                     row = [table_name] + [str(x) for x in list(crow)]
@@ -170,35 +207,48 @@ class Session:
         print("Successfully created master file: parsed ({0}) email(s)".format(i))
 
     def _updatedb(self):
-        # load table index
-        with open("index.json", "r") as f:
-            table_index = json.load(f)
+        def genquery(table_id):
+            query = """CREATE TABLE '{0}'
+                (entry_id text,
+                sent_at text,
+                email text,
+                name text,
+                subject text,
+                content text)""".format(table_id)
+
+            return query
+        # load configuration file
+        with open("config.json", "r") as f:
+            config = json.load(f)
         # for each email account
         i = 0
         for account in self.accounts:
             # if account does not exist in table index:
-            if str(account) not in table_index:
+            if str(account) not in config["index"]:
                 table_id = str(uuid.uuid4()).replace("-", "_")
                 # create sqlite3 table
-                query = """CREATE TABLE '{0}'
-                    (entry_id text,
-                    sent_at text,
-                    email text,
-                    name text,
-                    subject text,
-                    content text)""".format(table_id)
-                self.c.execute(query)
+                self.c.execute(genquery(table_id))
                 i += 1
                 # update table index
-                table_index[str(account)] = table_id
-                with open("index.json", "w") as f:
-                    json.dump(table_index, f)
+                config["index"][str(account)] = table_id
+                with open("config.json", "w") as f:
+                    json.dump(config, f)
+            else: # assure table exists in database
+                table_id = config["index"][str(account)]
+                query = "SELECT name FROM sqlite_master WHERE type='table' AND name='{0}'"
+                query = query.format(table_id)
+                self.c.execute(query)
+                if type(self.c.fetchone()) is tuple:
+                    continue
+                else: # create table if not exists
+                    self.c.execute(genquery(table_id))
 
         self.conn.commit()
+
         if i == 0:
             print("Table structure up to date")
         else:
-            print("Added ({0}) new table(s)".format(i))
+            print("Added ({0}) new index entry(s)".format(i))
 
     def _lastts(self, table_id):
         # check if table is empty
@@ -221,6 +271,7 @@ class Session:
 
         ts_list = [datetime.datetime.strptime(
             ts.split("+")[0], "%Y-%m-%d %H:%M:%S") for ts in ts_list]
+
         return max(ts_list)
 
     def _write(self, data):
@@ -228,8 +279,7 @@ class Session:
         row_counts = []
         for table_id in data:
             # insert parsed email data
-            query = "INSERT INTO '{0}' VALUES (?, ?, ?, ?, ?, ?)".format(
-                table_id)
+            query = "INSERT INTO '{0}' VALUES (?, ?, ?, ?, ?, ?)".format(table_id)
             self.c.executemany(query, data[table_id])
             row_counts.append(len(data[table_id]))
 
