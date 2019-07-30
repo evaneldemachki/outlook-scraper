@@ -6,6 +6,7 @@ import os
 import json
 import datetime
 import exceptions
+import pandas
 
 outlook = client.Dispatch("Outlook.Application").GetNamespace("MAPI")
 
@@ -91,10 +92,9 @@ class Session:
             except:
                 continue
 
-    def update(self, mode=None):
-        if mode == "debug":
-            with open("debug.txt", "a", encoding="utf-8") as f:
-                pass
+    def update(self, gui=False):
+        if gui:
+            extension = {}
 
         def buildrow(obj):
             row = []
@@ -108,18 +108,12 @@ class Session:
                 "Body"
             )
             for attr in attr_list:
-                if mode == "debug":
-                    with open("debug.txt", "a", encoding="utf-8") as f:
-                        f.write("..." + attr + ":\n")
                 try:
                     entry = str(getattr(obj, attr))
                     if attr == "SentOn":
                         entry = entry.split("+")[0]
                 except:
                     entry = "ERROR"
-                if mode == "debug":
-                    with open("debug.txt", "a", encoding="utf-8") as f:
-                        f.write("......" + entry + ":\n")
 
                 row.append(entry)
 
@@ -135,10 +129,6 @@ class Session:
         for account in self.accounts:
             acc_name = str(account)
             print("Scanning account: {0}".format(acc_name))
-            # log to debug if in debug mode
-            if mode == "debug":
-                with open("debug.txt", "a", encoding="utf-8") as f:
-                    f.write("account: " + acc_name + ":\n")
             # load table id from table index
             table_id = config["index"][acc_name]
             queue[table_id] = []
@@ -162,9 +152,28 @@ class Session:
 
             if i == 0:
                 print("...account is up to date")
+                if gui:
+                    extension[acc_name] = None
             else:
                 print("...found ({0}) new email(s)".format(i))
-                self._write(queue)
+                if gui:
+                    extension[acc_name] = queue[table_id]
+
+        self._write(queue)
+        if gui:
+            return extension
+
+    def loadtable(self, account):
+        # load config file
+        with open("config.json", "r") as f:
+            config = json.load(f)
+
+        table_id = config["index"][account]
+        query = "SELECT * FROM '{0}'".format(table_id)
+        data = pandas.read_sql(query, con=self.conn)
+
+        return data
+
 
     def debug(self):
         for account in self.accounts:
