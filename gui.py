@@ -15,87 +15,55 @@ def bridge():
             "object": None,
             "inbox": {}
         }
-        inbox = entry["inbox"]
         data = sess.loadtable(account)
-        for row in data.itertuples():
-            inbox[row[1]] = {
-                "attributes": [*row[2:-1]],
-                "content": row[-1]
-            }
+        content = data.pop("content")
+        data.pop("entry_id")
+        # rename columns to numbered
+        data.columns = [0,1,2,3]
+        entry["inbox"] = {
+            "object": None,
+            "attributes": data,
+            "content": content
+        }
 
         index[account] = entry
 
     return index
 
-class FlipTable(QtWidgets.QTableWidget):
-    def __init__(self, parent, columns):
+class InboxModel(QtCore.QAbstractTableModel):
+    def __init__(self, data, parent=None):
         super().__init__(parent)
 
-        _translate = QtCore.QCoreApplication.translate
+        self.headings = ["Timestamp", "Sender Address", "Sender Name", "Subject"]
+        self.dataframe = data
 
-        self.columns = columns
-        self.pages = {}
-        self.active = None
+    def rowCount(self, parent):
+        return self.dataframe.shape[0]
 
-        self.setColumnCount(len(columns))
-        self.setRowCount(0)
+    def columnCount(self, parent):
+        return self.dataframe.shape[1]
 
-        item = QtWidgets.QTableWidgetItem()
-        item.setText(_translate("MainWindow", "0"))
-        self.setVerticalHeaderItem(0, item)
-        for col, n in zip(self.columns, range(len(self.columns))):
-            item = QtWidgets.QTableWidgetItem()
-            item.setText(_translate("MainWindow", self.columns[col]))
-            self.setHorizontalHeaderItem(n, item)
+    def data(self, index, role):
+        if role == QtCore.Qt.DisplayRole:
+            return self.dataframe[index.column()][index.row()]
 
-    def addpage(self, page):
-        self.pages[page] = []
-        if len(self.pages) == 1:
-            self.flipto(page)
+        return QtCore.QVariant()
 
-    def flipto(self, page):
-        if self.active is not None and len(self.pages[page]) != 0:
-            active_page = self.pages[self.active]
-            for r in range(len(active_page)):
-                for c in range(len(self.columns)):
-                    active_page[r][c] = self.takeItem(r, c)
+    def headerData(self, section, orientation, role):
+        if role != QtCore.Qt.DisplayRole:
+            return QtCore.QVariant()
 
-        if len(self.pages[page]) != 0:
-            self.setRowCount(len(self.pages[page]))
-            for r in range(len(self.pages[page])):
-                for c in range(len(self.columns)):
-                    item = self.pages[page][r][c]
-                    self.setItem(r, c, item)
+        return self.headings[section]
 
-        self.active = page
-
-    def refresh(self, extended):
-        active_page = self.pages[self.active]
-        for r in range(len(active_page) - extended):
-            for c in range(len(self.columns)):
-                active_page[r][c] = self.takeItem(r, c)
-
-        self.setRowCount(len(active_page))
-        for r in range(len(active_page)):
-            for c in range(len(self.columns)):
-                item = self.pages[self.active][r][c]
-                self.setItem(r, c, item)
-
-    def addrows(self, page, rows):
-        _translate = QtCore.QCoreApplication.translate
-        extended = 0
-        for row in rows:
-            item_row = []
-            for cell in row:
-                item = QtWidgets.QTableWidgetItem()
-                item.setText(_translate("MainWindow", cell))
-                item_row.append(item)
-
-            self.pages[page].append(item_row)
-            extended += 1
-
-        if self.active == page:
-            self.refresh(extended)
+    def addRows(self, rows):
+        position = self.dataframe.shape[0] - 1
+        end = position + rows.shape[0] - 1
+        # begin model insertion
+        self.beginInsertRows(QtCore.QModelIndex(), position, end)
+        # append rows to dataframe
+        self.dataframe = self.dataframe.append(rows, ignore_index=True)
+        # end model insertion
+        self.endInsertRows()
 
 class Ui_MainWindow(QtWidgets.QMainWindow):
     def __init__(self):
@@ -119,78 +87,76 @@ class Ui_MainWindow(QtWidgets.QMainWindow):
         self.centralwidget.setObjectName("centralwidget")
         # create inbox selection sidebar
         self.sidebar = QtWidgets.QFrame(self.centralwidget)
-        self.sidebar.setGeometry(QtCore.QRect(10, 50, 161, 521))
+        self.sidebar.setGeometry(QtCore.QRect(5, 50, 180, 620))
         self.sidebar.setFrameShape(QtWidgets.QFrame.StyledPanel)
         self.sidebar.setFrameShadow(QtWidgets.QFrame.Raised)
         self.sidebar.setObjectName("sidebar")
         # dynamically generate inbox selector buttons
-        top_pos = 10
+        top_pos = 0
         for account in self.cache["index"]:
             pushButton = QtWidgets.QPushButton(self.sidebar)
-            pushButton.setGeometry(QtCore.QRect(10, top_pos, 141, 31))
+            pushButton.setGeometry(QtCore.QRect(5, top_pos, 170, 30))
             pushButton.setObjectName(account)
             pushButton.clicked.connect(self.flip)
             self.cache["index"][account]["object"] = pushButton
             top_pos += 40
         # create selector sidebar label
         self.sidebar_label = QtWidgets.QLabel(self.centralwidget)
-        self.sidebar_label.setGeometry(QtCore.QRect(10, 0, 171, 41))
+        self.sidebar_label.setGeometry(QtCore.QRect(10, 0, 160, 50))
         self.sidebar_label.setAlignment(QtCore.Qt.AlignCenter)
         self.sidebar_label.setObjectName("sidebar_label")
-
-        # create inbox list widget and label
-        table_columns = {
-            "sent_at": "Timestamp",
-            "email": "Sender Email",
-            "name": "Sender Name",
-            "subject": "Subject"
-        }
-        self.tableWidget = FlipTable(self.centralwidget, table_columns)
-        self.tableWidget.setGeometry(QtCore.QRect(180, 50, 621, 211))
-        self.tableWidget.setObjectName("email_attributes")
+        # set table view
+        self.tableView = QtWidgets.QTableView(self.centralwidget)
+        self.tableView.setGeometry(QtCore.QRect(200, 50, 630, 300))
+        self.tableView.setObjectName("email_attributes")
+        self.tableView.setSelectionMode(QtWidgets.QAbstractItemView.SingleSelection)
+        self.tableView.setSelectionBehavior(QtWidgets.QAbstractItemView.SelectRows)
+        self.tableView.clicked.connect(self.showcontent)
+        vh = self.tableView.verticalHeader()
+        vh.setVisible(False)
+        hh = self.tableView.horizontalHeader()
+        hh.setStretchLastSection(True)
+        hh.setVisible(True)
+        # build inbox models
         for account in self.cache["index"]:
-            self.tableWidget.addpage(account)
-            rows = []
-            for key, data in self.cache["index"][account]["inbox"].items():
-                rows.append(data["attributes"])
-
-            self.tableWidget.addrows(account, rows)
-        # bind showcontent() to table indexes
-        self.tableWidget.clicked.connect(self.showcontent)
-        # set active element to FlipTable.active
-        self.cache["active"] = self.tableWidget.active
+            model = InboxModel(self.cache["index"][account]["inbox"]["attributes"])
+            self.cache["index"][account]["inbox"]["object"] = model
+        # set active element to first account
+        self.cache["active"] = list(self.cache["index"])[0]
+        # set view model to active model
+        self.tableView.setModel(self.cache["index"][self.cache["active"]]["inbox"]["object"])
         # create table label
-        self.item_attr_label = QtWidgets.QLabel(self.centralwidget)
-        self.item_attr_label.setGeometry(QtCore.QRect(180, 10, 621, 31))
-        self.item_attr_label.setAlignment(QtCore.Qt.AlignCenter)
-        self.item_attr_label.setObjectName("email_attr_label")
+        self.attributes_label = QtWidgets.QLabel(self.centralwidget)
+        self.attributes_label.setGeometry(QtCore.QRect(180, 0, 621, 50))
+        self.attributes_label.setAlignment(QtCore.Qt.AlignCenter)
+        self.attributes_label.setObjectName("attributes_label")
         # create email content viewer
-        self.item_content = QtWidgets.QTextBrowser(self.centralwidget)
-        self.item_content.setGeometry(QtCore.QRect(180, 310, 631, 261))
-        self.item_content.setObjectName("email_content")
+        self.contentWidget = QtWidgets.QTextBrowser(self.centralwidget)
+        self.contentWidget.setGeometry(QtCore.QRect(200, 400, 630, 200))
+        self.contentWidget.setObjectName("email_content")
         # create email content label
-        self.label_2 = QtWidgets.QLabel(self.centralwidget)
-        self.label_2.setGeometry(QtCore.QRect(180, 270, 621, 31))
-        self.label_2.setAlignment(QtCore.Qt.AlignCenter)
-        self.label_2.setObjectName("content_label")
+        self.content_label = QtWidgets.QLabel(self.centralwidget)
+        self.content_label.setGeometry(QtCore.QRect(180, 350, 621, 50))
+        self.content_label.setAlignment(QtCore.Qt.AlignCenter)
+        self.content_label.setObjectName("content_label")
         # create control panel
         self.control = QtWidgets.QFrame(self.centralwidget)
-        self.control.setGeometry(QtCore.QRect(820, 50, 161, 521))
+        self.control.setGeometry(QtCore.QRect(840, 50, 180, 620))
         self.control.setFrameShape(QtWidgets.QFrame.StyledPanel)
         self.control.setFrameShadow(QtWidgets.QFrame.Raised)
         self.control.setObjectName("control_panel")
         # create control panel label
-        self.label_3 = QtWidgets.QLabel(self.centralwidget)
-        self.label_3.setGeometry(QtCore.QRect(810, 10, 171, 41))
-        self.label_3.setAlignment(QtCore.Qt.AlignCenter)
-        self.label_3.setObjectName("control_label")
+        self.control_label = QtWidgets.QLabel(self.centralwidget)
+        self.control_label.setGeometry(QtCore.QRect(840, 0, 150, 50))
+        self.control_label.setAlignment(QtCore.Qt.AlignCenter)
+        self.control_label.setObjectName("control_label")
         # create control panel buttons
         self.updateButton = QtWidgets.QPushButton(self.control)
-        self.updateButton.setGeometry(QtCore.QRect(10, 10, 141, 31))
+        self.updateButton.setGeometry(QtCore.QRect(5, 0, 150, 30))
         self.updateButton.setObjectName("pushButton_2")
         self.updateButton.clicked.connect(self.update)
         self.masterButton = QtWidgets.QPushButton(self.control)
-        self.masterButton.setGeometry(QtCore.QRect(10, 50, 141, 31))
+        self.masterButton.setGeometry(QtCore.QRect(5, 40, 150, 30))
         self.masterButton.setObjectName("pushButton_3")
         self.masterButton.clicked.connect(self.makemaster)
 
@@ -201,8 +167,8 @@ class Ui_MainWindow(QtWidgets.QMainWindow):
     def retranslateUi(self):
         _translate = QtCore.QCoreApplication.translate
         self.setWindowTitle(_translate("MainWindow", "Outlook Parser"))
-        __sortingEnabled = self.tableWidget.isSortingEnabled()
-        self.tableWidget.setSortingEnabled(False)
+        #__sortingEnabled = self.tableModel.isSortingEnabled()
+        #self.tableModel.setSortingEnabled(False)
 
         for key in self.cache["index"]:
             self.cache["index"][key]["object"].setText(_translate("MainWindow", key))
@@ -217,10 +183,14 @@ class Ui_MainWindow(QtWidgets.QMainWindow):
                 #item.setText(_translate("MainWindow", text))
 
         self.sidebar_label.setText(_translate("MainWindow", "Inbox Selector"))
+        self.content_label.setText(_translate("MainWindow", "Email Content"))
+        self.attributes_label.setText(_translate("MainWindow", "Email Attributes"))
+        self.control_label.setText(_translate("MainWindow", "Control Panel"))
 
     def flip(self):
         sender_name = self.sender().objectName()
-        self.tableWidget.flipto(sender_name)
+        model = self.cache["index"][sender_name]["inbox"]["object"]
+        self.tableView.setModel(model)
         self.cache["active"] = sender_name
         self.clearcontent()
 
@@ -229,30 +199,29 @@ class Ui_MainWindow(QtWidgets.QMainWindow):
 
         row = table_click.row()
         account = self.cache["active"]
-        key = list(self.cache["index"][account]["inbox"])[row]
-        content = self.cache["index"][account]["inbox"][key]["content"]
-        self.item_content.setHtml(_translate("MainWindow", content))
+        content = self.cache["index"][account]["inbox"]["content"][row]
+        self.contentWidget.setHtml(_translate("MainWindow", content))
 
     def clearcontent(self):
         _translate = QtCore.QCoreApplication.translate
 
-        self.item_content.setHtml(_translate("MainWindow", ""))
+        self.contentWidget.setHtml(_translate("MainWindow", ""))
 
     def update(self):
         extension = sess.update(gui=True)
         for account in extension:
             if extension[account] is not None:
-                entries = {}
+                attributes, content = [], []
                 for row in extension[account]:
-                    entries[row[0]] = {
-                        "attributes": [*row[1:-1]],
-                        "content": row[-1]
-                    }
+                    attributes.append([*row[1:-1]])
+                    content.append(row[-1])
 
-                    self.cache["index"][account]["inbox"][row[0]] = entries[row[0]]
+                attributes = pandas.DataFrame(attributes)
+                content = pandas.Series(content)
 
-                rows = [[*entries[entry]["attributes"]] for entry in entries]
-                self.tableWidget.addrows(account, rows)
+                self.cache["index"][account]["inbox"]["attributes"] = self.cache["index"][account]["inbox"]["attributes"].append(attributes, ignore_index=True)
+                self.cache["index"][account]["inbox"]["content"] = self.cache["index"][account]["inbox"]["content"].append(content, ignore_index=True)
+                self.cache["index"][account]["inbox"]["object"].addRows(attributes)
 
     def makemaster(self):
         sess.makemaster()
