@@ -48,8 +48,8 @@ class Session:
             raise exceptions.NoConfigFile
         # verify limit is valid
         with open("config.json", "r") as f:
-            config = json.load(f)
-        strpdelta(config["settings"]["limit"])
+            self.config = json.load(f)
+        strpdelta(self.config["settings"]["limit"])
         # load outlook accounts
         self.accounts = []
         for account in client.Dispatch("Outlook.Application").Session.Accounts:
@@ -64,10 +64,8 @@ class Session:
         msg = "outlook-scraper session:\n"
         msg += "-accounts:\n"
 
-        with open("config.json", "r") as f:
-            config = json.load(f)
-        for account in config:
-            query = "SELECT count(*) FROM '{0}'".format(config["index"][account])
+        for account in self.config:
+            query = "SELECT count(*) FROM '{0}'".format(self.config["index"][account])
             self.c.execute(query)
             table_count = self.c.fetchone()[0]
             msg += "\t{0}: {1} email(s) stored\n".format(account, table_count)
@@ -119,9 +117,6 @@ class Session:
 
             return tuple(row)
 
-        # load config file
-        with open("config.json", "r") as f:
-            config = json.load(f)
         # initialize update queue
         queue = {}
         # for each account:
@@ -130,14 +125,14 @@ class Session:
             acc_name = str(account)
             print("Scanning account: {0}".format(acc_name))
             # load table id from table index
-            table_id = config["index"][acc_name]
+            table_id = self.config["index"][acc_name]
             queue[table_id] = []
             # locate inbox folder
             inbox = outlook.Folders(account.DeliveryStore.DisplayName)
             inbox = inbox.Folders("Inbox").Items
             # find last saved timestamp from database
             last_ts = self._lastts(table_id)
-            limit = strpdelta(config["settings"]["limit"])
+            limit = strpdelta(self.config["settings"]["limit"])
             curr_time = datetime.datetime.now()
             limit = curr_time - limit
             if last_ts is None:
@@ -163,13 +158,29 @@ class Session:
         if gui:
             return extension
 
-    def loadtable(self, account):
-        # load config file
-        with open("config.json", "r") as f:
-            config = json.load(f)
+    def loadtable(self, account, mirror=None):
+        table_id = self.config["index"][account]
+        query = "SELECT * FROM '{0}'"
+        if mirror is None:
+            query = query.format(table_id)
+            data = pandas.read_sql(query, con=self.conn)
+        elif mirror is "archive":
+            mirror_id = "archive_" + table_id
+            query = "SELECT * FROM '{0}'".format(mirror_id)
+            data = pandas.read_sql(query, con=self.conn)
+        elif mirror is "submissions":
+            mirror_id = "submissions_" + table_id
+            query = "SELECT * FROM '{0}'".format(mirror_id)
+            data = pandas.read_sql(query, con=self.conn)
+        else:
+            raise exceptions.InvalidMirrorTable
 
-        table_id = config["index"][account]
-        query = "SELECT * FROM '{0}'".format(table_id)
+        return data
+
+    def load(self, account):
+        table_id = self.config["index"][account]
+        archive_id = "archive_" + table_id
+        query = "SELECT * FROM '{0}'".format(archive_id)
         data = pandas.read_sql(query, con=self.conn)
 
         return data
@@ -199,14 +210,11 @@ class Session:
                         return item
 
     def makemaster(self, path="master.csv"):
-        # load table index
-        with open("config.json", "r") as f:
-            config = json.load(f)
         with open(path, "w", encoding="utf-8") as f:
             writer = csv.writer(f, lineterminator='\n')
             i = 0
-            for table_name in config["index"]:
-                query = "SELECT * FROM '{0}'".format(config["index"][table_name])
+            for table_name in self.config["index"]:
+                query = "SELECT * FROM '{0}'".format(self.config["index"][table_name])
                 self.c.execute(query)
                 for crow in self.c.fetchall():
                     row = [table_name] + [str(x) for x in list(crow)]
@@ -218,7 +226,7 @@ class Session:
     def _updatedb(self):
         def genquery(table_id):
             query = """CREATE TABLE '{0}'
-                (entry_id text,
+                (entry_id text unique,
                 sent_at text,
                 email text,
                 name text,
@@ -226,24 +234,21 @@ class Session:
                 content text)""".format(table_id)
 
             return query
-        # load configuration file
-        with open("config.json", "r") as f:
-            config = json.load(f)
         # for each email account
         i = 0
         for account in self.accounts:
             # if account does not exist in table index:
-            if str(account) not in config["index"]:
+            if str(account) not in self.config["index"]:
                 table_id = str(uuid.uuid4()).replace("-", "_")
                 # create sqlite3 table
                 self.c.execute(genquery(table_id))
                 i += 1
                 # update table index
-                config["index"][str(account)] = table_id
+                self.config["index"][str(account)] = table_id
                 with open("config.json", "w") as f:
-                    json.dump(config, f)
+                    json.dump(self.config, f)
             else: # assure table exists in database
-                table_id = config["index"][str(account)]
+                table_id = self.config["index"][str(account)]
                 query = "SELECT name FROM sqlite_master WHERE type='table' AND name='{0}'"
                 query = query.format(table_id)
                 self.c.execute(query)
@@ -251,6 +256,14 @@ class Session:
                     continue
                 else: # create table if not exists
                     self.c.execute(genquery(table_id))
+            # assure mirror tables exist
+            for mirror in ["archive", "submissions"]:
+                mirror_id = "{0}_{1}".format(mirror, table_id)
+                query = "SELECT name FROM sqlite_master WHERE type='table' and name='{0}'".format(mirror_id)
+                self.c.execute(query)
+                # create archives table if not exist
+                if type(self.c.fetchone()) is not tuple:
+                    self.c.execute(genquery(mirror_id))
 
         self.conn.commit()
 
@@ -278,10 +291,42 @@ class Session:
 
             x += 1
 
-        ts_list = [datetime.datetime.strptime(
-            ts.split("+")[0], "%Y-%m-%d %H:%M:%S") for ts in ts_list]
+        convert_ts = lambda ts: datetime.datetime.strptime(
+            ts.split("+")[0],
+            "%Y-%m-%d %H:%M:%S"
+        )
+        ts_list = [convert_ts(ts) for ts in ts_list]
 
         return max(ts_list)
+
+    def mirrorone(self, account, entry_id, mirror):
+        table_id = self.config["index"][account]
+        query = "SELECT * FROM '{0}' WHERE entry_id='{1}'".format(table_id, entry_id)
+        row = self.c.execute(query)
+        row = self.c.fetchone()
+        if type(row) is tuple:
+            query = "INSERT INTO '{0}_{1}' VALUES (?, ?, ?, ?, ?, ?)".format(mirror, table_id)
+            try:
+                self.c.execute(query, row)
+                self.conn.commit()
+            except sqlite3.IntegrityError:
+                raise exceptions.DuplicateEntryID
+        else:
+            raise exceptions.InvalidEntryID
+
+    def mirrormany(self, account, entry_ids, mirror, ignore_duplicates=False):
+        for entry_id in entry_ids:
+            try:
+                self.archive(account, entry_id, mirror)
+            except exceptions.DuplicateEntryID:
+                if ignore_duplicates:
+                    continue
+                else:
+                    raise
+            except:
+                raise
+
+        return
 
     def _write(self, data):
         # for each email account inbox:
