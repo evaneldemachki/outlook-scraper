@@ -152,7 +152,17 @@ class Session:
             else:
                 print("...found ({0}) new email(s)".format(i))
                 if gui:
-                    extension[acc_name] = queue[table_id]
+                    extension[acc_name] = pandas.DataFrame(
+                        queue[table_id],
+                        columns=[
+                            "entry_id",
+                            "sent_at",
+                            "email",
+                            "name",
+                            "subject",
+                            "content"
+                        ]
+                    )
 
         self._write(queue)
         if gui:
@@ -179,8 +189,19 @@ class Session:
 
     def load(self, account):
         table_id = self.config["index"][account]
+        query = "SELECT * FROM '{0}'".format(table_id)
+        data = pandas.read_sql(query, con=self.conn)
+
+        return data
+
+    def load_archive(self, account, category=None):
+        table_id = self.config["index"][account]
         archive_id = "archive_" + table_id
-        query = "SELECT * FROM '{0}'".format(archive_id)
+        if category is None:
+            query = "SELECT * FROM '{0}'".format(archive_id)
+        else:
+            query = "SELECT * FROM '{0}' WHERE category='{1}'".format(archive_id, category)
+
         data = pandas.read_sql(query, con=self.conn)
 
         return data
@@ -224,7 +245,7 @@ class Session:
         print("Successfully created master file: parsed ({0}) email(s)".format(i))
 
     def _updatedb(self):
-        def genquery(table_id):
+        def genquery(table_id, archive=False):
             query = """CREATE TABLE '{0}'
                 (entry_id text unique,
                 sent_at text,
@@ -232,6 +253,9 @@ class Session:
                 name text,
                 subject text,
                 content text)""".format(table_id)
+
+            if archive:
+                query = query[:-1] + ",\n\t" + "category text)"
 
             return query
         # for each email account
@@ -242,6 +266,7 @@ class Session:
                 table_id = str(uuid.uuid4()).replace("-", "_")
                 # create sqlite3 table
                 self.c.execute(genquery(table_id))
+                self.c.execute(genquery("archive_" + table_id, archive=True))
                 i += 1
                 # update table index
                 self.config["index"][str(account)] = table_id
@@ -256,14 +281,13 @@ class Session:
                     continue
                 else: # create table if not exists
                     self.c.execute(genquery(table_id))
-            # assure mirror tables exist
-            for mirror in ["archive", "submissions"]:
-                mirror_id = "{0}_{1}".format(mirror, table_id)
-                query = "SELECT name FROM sqlite_master WHERE type='table' and name='{0}'".format(mirror_id)
+                # assure archive table exists
+                archive_id = "archive_{0}".format(table_id)
+                query = "SELECT name FROM sqlite_master WHERE type='table' AND name='{0}'".format(archive_id)
                 self.c.execute(query)
                 # create archives table if not exist
                 if type(self.c.fetchone()) is not tuple:
-                    self.c.execute(genquery(mirror_id))
+                    self.c.execute(genquery(archive_id, archive=True))
 
         self.conn.commit()
 
@@ -299,13 +323,13 @@ class Session:
 
         return max(ts_list)
 
-    def mirrorone(self, account, entry_id, mirror):
+    def archive_one(self, account, entry_id, category=None):
         table_id = self.config["index"][account]
         query = "SELECT * FROM '{0}' WHERE entry_id='{1}'".format(table_id, entry_id)
         row = self.c.execute(query)
-        row = self.c.fetchone()
+        row = self.c.fetchone() + (category,)
         if type(row) is tuple:
-            query = "INSERT INTO '{0}_{1}' VALUES (?, ?, ?, ?, ?, ?)".format(mirror, table_id)
+            query = "INSERT INTO 'archive_{0}' VALUES (?, ?, ?, ?, ?, ?, ?)".format(table_id)
             try:
                 self.c.execute(query, row)
                 self.conn.commit()
@@ -314,10 +338,10 @@ class Session:
         else:
             raise exceptions.InvalidEntryID
 
-    def mirrormany(self, account, entry_ids, mirror, ignore_duplicates=False):
+    def archive_many(self, account, entry_ids, category=None, ignore_duplicates=False):
         for entry_id in entry_ids:
             try:
-                self.archive(account, entry_id, mirror)
+                self.archive_one(account, entry_id, category)
             except exceptions.DuplicateEntryID:
                 if ignore_duplicates:
                     continue
@@ -326,7 +350,28 @@ class Session:
             except:
                 raise
 
-        return
+    def delete_one(self, account, entry_id, archive=False):
+        table_id = self.config["index"][account]
+        if archive is False:
+            query_check = "SELECT count(*) FROM '{0}' WHERE entry_id='{1}'".format(table_id, entry_id)
+            query_del = "DELETE FROM '{0}' WHERE entry_id='{1}'".format(table_id, entry_id)
+        elif archive is True:
+            query_check = "SELECT count(*) FROM 'archive_{0}' WHERE entry_id='{1}'".format(table_id, entry_id)
+            query_del = "DELETE FROM 'archive_{0}' WHERE entry_id='{1}'".format(table_id, entry_id)
+        else:
+            raise ValueError("archive takes (True/False)")
+
+        row_count = self.c.execute(query_check)
+        row_count = self.c.fetchone()[0]
+        if row_count == 1:
+            self.c.execute(query_del)
+            self.conn.commit()
+        else:
+            raise exceptions.InvalidEntryID
+
+    def delete_many(self, account, entry_ids, archive=False):
+        for entry_id in entry_ids:
+            self.delete_one(account, entry_id, archive)
 
     def _write(self, data):
         # for each email account inbox:
