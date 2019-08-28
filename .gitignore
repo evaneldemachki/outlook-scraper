@@ -1,5 +1,6 @@
 dev/
 __pycache__/
+.vscode/
 config.json
 venv/
 core.db

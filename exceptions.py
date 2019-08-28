@@ -1,6 +1,11 @@
 class Error(Exception):
     pass
 
+class UiRuntimeError(Error):
+    def __str__(self):
+        msg = self.args[0]
+        return msg
+
 class NoConfigFile(Error):
     def __str__(self):
         msg = "configuration file has not yet been generated"

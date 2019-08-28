@@ -19,6 +19,10 @@ def generate():
         "index": {},
         "settings": {
             "limit": "10d"
+        },
+        "categories": [],
+        "gui": {
+            "category_colors": {}
         }
     }
     for account in client.Dispatch("Outlook.Application").Session.Accounts:
